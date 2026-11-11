@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -41,13 +42,63 @@ USER_AGENT = (
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
+class EvoluteError(Exception):
+    """An API failure with a message safe to expose in Home Assistant."""
+
+
+class EvoluteAuthError(EvoluteError):
+    """The account credentials could not be restored."""
+
+
+class EvoluteUnavailableError(EvoluteError):
+    """A temporary HTTP or transport failure."""
+
+
+class EvoluteProtocolError(EvoluteError):
+    """The server response did not have the expected format."""
+
+
+class EvoluteRequestError(EvoluteError):
+    """The endpoint rejected the operation without confirming an account failure."""
+
+
+@dataclass
+class _RefreshAttempt:
+    failure: tuple[type[EvoluteError], str] | None = None
+
+
+def _raise_for_status(status: int, operation: str) -> None:
+    if 200 <= status < 300:
+        return
+    message = f"Evolute {operation} failed (HTTP {status})"
+    if status >= 500 or status in (408, 429):
+        raise EvoluteUnavailableError(message)
+    raise EvoluteRequestError(message)
+
+
+async def _async_read_object(
+    response: aiohttp.ClientResponse, *, allow_empty: bool = False
+) -> dict[str, Any]:
+    body = await response.read()
+    if allow_empty and not body.strip():
+        return {}
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise EvoluteProtocolError("Evolute returned invalid JSON") from None
+    if not isinstance(data, dict):
+        raise EvoluteProtocolError("Evolute returned an unexpected JSON structure")
+    return data
+
+
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
     """Decode a JWT payload without verifying the signature."""
     try:
         payload_b64 = token.split(".")[1]
         padding = "=" * (-len(payload_b64) % 4)
         payload = base64.urlsafe_b64decode(payload_b64 + padding)
-        return json.loads(payload)
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
 
@@ -366,9 +417,7 @@ class EvoluteClient:
         self.refresh_token = refresh_token
         self._tokens_updated_callback = tokens_updated_callback
         self._refresh_lock = asyncio.Lock()
-        self._refresh_generation = 0
-        self._last_refresh_succeeded = False
-        self.auth_failed = False
+        self._refresh_attempt = _RefreshAttempt()
         self._imeis: dict[str, str] = {}
         # Whether this account may see tag-gated controls. Assume it may until
         # the flags endpoint says otherwise, so a failed lookup never silently
@@ -404,31 +453,34 @@ class EvoluteClient:
             "time-zone": str(_local_utc_offset_hours()),
         }
 
-    async def async_refresh_tokens(self) -> bool:
-        """Refresh the current token pair, sharing any concurrent attempt."""
-        return await self._async_refresh_if_needed(
-            self._cookies(), self._refresh_generation
-        )
-
     async def _async_refresh_if_needed(
-        self, sent_cookies: dict[str, str], refresh_generation: int
-    ) -> bool:
-        """Refresh the credentials used by a request, or reuse an attempt's result."""
+        self, sent_cookies: dict[str, str], attempt: _RefreshAttempt
+    ) -> None:
+        """Refresh the credentials used by a request, or reuse its attempt's outcome."""
         async with self._refresh_lock:
             if sent_cookies != self._cookies():
-                return True
-            if refresh_generation != self._refresh_generation:
-                return self._last_refresh_succeeded
+                return
+            if attempt is not self._refresh_attempt:
+                if attempt.failure is not None:
+                    error_type, message = attempt.failure
+                    raise error_type(message)
+                return
 
-            self._last_refresh_succeeded = False
+            attempt.failure = (
+                EvoluteUnavailableError, "Evolute token refresh did not complete"
+            )
             try:
-                self._last_refresh_succeeded = await self._async_refresh_tokens()
-                return self._last_refresh_succeeded
+                await self._async_refresh_tokens()
+            except EvoluteError as err:
+                attempt.failure = (type(err), str(err))
+                raise
+            else:
+                attempt.failure = None
             finally:
                 # Requests already sent share a failure; a later request can retry.
-                self._refresh_generation += 1
+                self._refresh_attempt = _RefreshAttempt()
 
-    async def _async_refresh_tokens(self) -> bool:
+    async def _async_refresh_tokens(self) -> None:
         """Request and persist a new token pair while holding the refresh lock."""
         try:
             async with self._session.post(
@@ -438,35 +490,33 @@ class EvoluteClient:
                 timeout=REQUEST_TIMEOUT,
             ) as resp:
                 if resp.status in (401, 403):
-                    self.auth_failed = True
-                    _LOGGER.error(
-                        "Evolute token refresh rejected (HTTP %s) - refresh token likely expired",
-                        resp.status,
+                    raise EvoluteAuthError(
+                        f"Evolute rejected token refresh (HTTP {resp.status})"
                     )
-                    return False
-                if resp.status != 200:
-                    _LOGGER.error("Evolute token refresh failed: HTTP %s", resp.status)
-                    return False
-                data = await resp.json(content_type=None)
-        except aiohttp.ClientError as err:
-            _LOGGER.error("Evolute token refresh error: %s", err)
-            return False
+                _raise_for_status(resp.status, "token refresh")
+                data = await _async_read_object(resp)
+        except (asyncio.TimeoutError, TimeoutError):
+            raise EvoluteUnavailableError("Evolute token refresh timed out") from None
+        except aiohttp.ClientError:
+            raise EvoluteUnavailableError("Connection to Evolute failed during token refresh") from None
 
         access = data.get("accessToken")
-        refresh = data.get("refreshToken") or self.refresh_token
-        if not access:
-            _LOGGER.error("Evolute token refresh response missing accessToken")
-            return False
+        refresh = data.get("refreshToken")
+        if not isinstance(access, str) or not access.strip():
+            raise EvoluteProtocolError("Evolute refresh response lacks a valid access token")
+        if refresh is not None and (
+            not isinstance(refresh, str) or (refresh and not refresh.strip())
+        ):
+            raise EvoluteProtocolError("Evolute refresh response contains an invalid refresh token")
 
         self.access_token = access
-        self.refresh_token = refresh
-        self.auth_failed = False
+        if refresh:
+            self.refresh_token = refresh
         if self._tokens_updated_callback:
             self._tokens_updated_callback(self.access_token, self.refresh_token)
-        return True
 
-    async def _async_search_cars(self) -> list[dict[str, Any]] | None:
-        """Return the raw /car/v2/search rows for this account, or None on failure."""
+    async def _async_search_cars(self) -> list[dict[str, Any]]:
+        """Return the raw /car/v2/search rows for this account."""
         body = {
             "limit": 50,
             "offset": 0,
@@ -477,17 +527,23 @@ class EvoluteClient:
             "includeMaintenance": True,
         }
         result = await self._request("POST", CAR_SEARCH_URL, json_body=body)
-        if result is None:
-            return None
-        return [row for row in result.get("rows", []) if isinstance(row, dict)]
+        rows = result.get("rows")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise EvoluteProtocolError("Evolute returned an invalid vehicle list")
+        if rows and not any(row.get("_id") for row in rows):
+            raise EvoluteProtocolError("Evolute vehicle list lacks vehicle identifiers")
+        return rows
 
-    async def async_get_cars(self) -> list[dict[str, Any]] | None:
-        """Return the list of cars for this account, or None on auth failure."""
+    async def async_get_cars(self) -> list[dict[str, Any]]:
+        """Return the list of cars for this account."""
         rows = await self._async_search_cars()
-        if rows is None:
-            return None
 
-        await self._async_update_user_flags()
+        try:
+            await self._async_update_user_flags()
+        except EvoluteAuthError:
+            raise
+        except EvoluteError as err:
+            _LOGGER.debug("Could not update Evolute account flags: %s", err)
 
         cars = []
         for row in rows:
@@ -496,8 +552,20 @@ class EvoluteClient:
             car_id = row.get("_id")
             if not car_id:
                 continue
-            details = await self._request("GET", f"{BASE_URL}/car-service/car/v2/{car_id}")
-            imei = (details or {}).get("imei")
+            if (
+                not isinstance(car_id, (str, int, float))
+                or not isinstance(model, dict)
+                or not isinstance(images, dict)
+            ):
+                raise EvoluteProtocolError("Evolute returned invalid vehicle metadata")
+            try:
+                details = await self._request("GET", f"{BASE_URL}/car-service/car/v2/{car_id}")
+            except EvoluteAuthError:
+                raise
+            except EvoluteError as err:
+                _LOGGER.debug("Could not obtain Evolute vehicle metadata: %s", err)
+                details = {}
+            imei = details.get("imei")
             if imei:
                 self._imeis[car_id] = str(imei)
             cars.append(
@@ -515,20 +583,17 @@ class EvoluteClient:
             )
         return cars
 
-    async def async_get_car_details(self) -> dict[str, dict[str, Any]] | None:
+    async def async_get_car_details(self) -> dict[str, dict[str, Any]]:
         """Return slow-moving per-car data (service, OTA, tracking), keyed by car id."""
         rows = await self._async_search_cars()
-        if rows is None:
-            return None
-        return {
-            row["_id"]: _parse_car_details(row) for row in rows if row.get("_id")
-        }
+        try:
+            return {row["_id"]: _parse_car_details(row) for row in rows if row.get("_id")}
+        except (AttributeError, TypeError, ValueError):
+            raise EvoluteProtocolError("Evolute returned invalid service data") from None
 
     async def _async_update_user_flags(self) -> None:
         """Read the account permissions that decide which controls are offered."""
         flags = await self._request("GET", USER_FLAGS_URL)
-        if flags is None:
-            return
         self._tagged_buttons_visible = bool(
             flags.get("isSuperAdmin") or flags.get("canViewTaggedCarButtons")
         )
@@ -544,8 +609,8 @@ class EvoluteClient:
             return None
         return self._imeis.get(car_id)
 
-    async def async_get_car_info(self, car_id: str) -> dict[str, Any] | None:
-        """Fetch and flatten telemetry for a single car. None on failure."""
+    async def async_get_car_info(self, car_id: str) -> dict[str, Any]:
+        """Fetch and flatten telemetry for a single car."""
         imei = self._telemetry_imei(car_id)
         url = (f"{BASE_URL}/client-bff-service/telemetry/{imei}" if imei
                else f"{BASE_URL}/car-service/tbox/{car_id}/info")
@@ -559,7 +624,7 @@ class EvoluteClient:
                 headers["if-none-match"] = etag
 
             sent_cookies = self._cookies()
-            refresh_generation = self._refresh_generation
+            refresh_attempt = self._refresh_attempt
             try:
                 async with self._session.get(
                     url,
@@ -568,15 +633,14 @@ class EvoluteClient:
                     timeout=REQUEST_TIMEOUT,
                 ) as resp:
                     if resp.status == 304:
-                        return self._last_info.get(car_id)
+                        if car_id not in self._last_info:
+                            raise EvoluteProtocolError("Evolute returned 304 without cached telemetry")
+                        return self._last_info[car_id]
 
                     if resp.status == 401 and not refreshed:
                         refreshed = True
                         resp.release()
-                        if not await self._async_refresh_if_needed(
-                            sent_cookies, refresh_generation
-                        ):
-                            return None
+                        await self._async_refresh_if_needed(sent_cookies, refresh_attempt)
                         continue
 
                     if resp.status == 404 and imei and not fell_back:
@@ -594,34 +658,38 @@ class EvoluteClient:
                         url = f"{BASE_URL}/car-service/tbox/{car_id}/info"
                         continue
 
-                    if resp.status != 200:
-                        _LOGGER.warning(
-                            "Evolute tbox info request failed for %s: HTTP %s", car_id, resp.status
-                        )
-                        return None
+                    _raise_for_status(resp.status, "telemetry request")
+                    raw = await _async_read_object(resp)
+                    if not raw.keys() & {
+                        "sensors", "isOnline", "onlineState", "isCarStateReady",
+                        "isParked", "lastOnlineTime",
+                    }:
+                        raise EvoluteProtocolError("Evolute returned an invalid telemetry object")
+                    if raw.get("sensors") is not None and not isinstance(raw["sensors"], dict):
+                        raise EvoluteProtocolError("Evolute returned invalid telemetry sensors")
+                    try:
+                        if imei:
+                            parsed = _parse_car_info_v2(raw, self._tagged_buttons_visible)
+                            self._buttons[car_id] = [
+                                button for button in (raw.get("buttons") or [])
+                                if isinstance(button, dict)
+                            ]
+                        else:
+                            parsed = _parse_car_info(raw)
+                    except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+                        raise EvoluteProtocolError("Evolute returned invalid telemetry fields") from None
 
                     new_etag = resp.headers.get("etag")
                     if new_etag:
                         self._etags[car_id] = new_etag
-
-                    raw = await resp.json(content_type=None)
-                    if imei:
-                        parsed = _parse_car_info_v2(
-                            raw, self._tagged_buttons_visible
-                        )
-                        self._buttons[car_id] = [
-                            button for button in (raw.get("buttons") or [])
-                            if isinstance(button, dict)
-                        ]
-                    else:
-                        parsed = _parse_car_info(raw)
                     self._last_info[car_id] = parsed
                     return parsed
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("Evolute tbox info request error for %s: %s", car_id, err)
-                return None
+            except (asyncio.TimeoutError, TimeoutError):
+                raise EvoluteUnavailableError("Evolute telemetry request timed out") from None
+            except aiohttp.ClientError:
+                raise EvoluteUnavailableError("Connection to Evolute failed during telemetry request") from None
 
-        return None
+        raise EvoluteRequestError("Evolute telemetry retry limit reached")
 
     def _resolve_v2_command(self, car_id: str, command: str) -> str | None:
         """Map one of our command names onto the carV2 fnName to send.
@@ -659,8 +727,8 @@ class EvoluteClient:
         imei = self._telemetry_imei(car_id)
         if not imei:
             url = f"{BASE_URL}/car-service/tbox/{car_id}/{command}"
-            result = await self._request("POST", url, json_body={})
-            return result is not None, None
+            await self._request("POST", url, json_body={}, allow_empty=True)
+            return True, None
 
         fn_name = self._resolve_v2_command(car_id, command)
         if fn_name is None:
@@ -675,9 +743,8 @@ class EvoluteClient:
             "POST",
             TELEMETRY_COMMANDS_URL,
             json_body={"commandName": fn_name, "imei": imei},
+            allow_empty=True,
         )
-        if result is None:
-            return False, None
         command_id = result.get("commandId")
         return True, str(command_id) if command_id else None
 
@@ -696,7 +763,7 @@ class EvoluteClient:
         imei = self._telemetry_imei(car_id)
         if not imei:
             return None
-        result = await self._request("GET", f"{TELEMETRY_COMMANDS_URL}/{imei}")
+        result = await self._request("GET", f"{TELEMETRY_COMMANDS_URL}/{imei}", allow_empty=True)
         if not result:
             return None
         if str(result.get("commandId") or "") != command_id:
@@ -704,11 +771,17 @@ class EvoluteClient:
         return result.get("status")
 
     async def _request(
-        self, method: str, url: str, json_body: dict[str, Any] | None = None
-    ) -> dict[str, Any] | None:
+        self,
+        method: str,
+        url: str,
+        json_body: dict[str, Any] | None = None,
+        *,
+        allow_empty: bool = False,
+    ) -> dict[str, Any]:
+        account_request = url == CAR_SEARCH_URL
         for attempt in range(2):
             sent_cookies = self._cookies()
-            refresh_generation = self._refresh_generation
+            refresh_attempt = self._refresh_attempt
             try:
                 async with self._session.request(
                     method,
@@ -718,24 +791,18 @@ class EvoluteClient:
                     cookies=sent_cookies,
                     timeout=REQUEST_TIMEOUT,
                 ) as resp:
-                    if resp.status == 401 and attempt == 0:
+                    refreshable = resp.status == 401 or (account_request and resp.status == 403)
+                    if refreshable and attempt == 0:
                         resp.release()
-                        if not await self._async_refresh_if_needed(
-                            sent_cookies, refresh_generation
-                        ):
-                            return None
+                        await self._async_refresh_if_needed(sent_cookies, refresh_attempt)
                         continue
+                    if account_request and resp.status == 401 and sent_cookies == self._cookies():
+                        raise EvoluteAuthError("Evolute rejected refreshed account credentials (HTTP 401)")
+                    _raise_for_status(resp.status, "API request")
+                    return await _async_read_object(resp, allow_empty=allow_empty)
+            except (asyncio.TimeoutError, TimeoutError):
+                raise EvoluteUnavailableError("Evolute API request timed out") from None
+            except aiohttp.ClientError:
+                raise EvoluteUnavailableError("Connection to Evolute failed") from None
 
-                    if resp.status >= 400:
-                        _LOGGER.warning("%s %s failed: HTTP %s", method, url, resp.status)
-                        return None
-
-                    try:
-                        return await resp.json(content_type=None)
-                    except (aiohttp.ContentTypeError, ValueError, json.JSONDecodeError):
-                        return {}
-            except aiohttp.ClientError as err:
-                _LOGGER.warning("%s %s error: %s", method, url, err)
-                return None
-
-        return None
+        raise EvoluteRequestError("Evolute API retry limit reached")

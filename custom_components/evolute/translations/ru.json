@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "Обновите токены Evolute",
-        "description": "Токены Evolute устарели или были отозваны. Войдите в app.evassist.ru в браузере и вставьте новые значения cookies evy-platform-access и evy-platform-refresh.",
+        "description": "Evolute отклонил данные аккаунта после попытки обновить токены. Войдите в app.evassist.ru в браузере и вставьте новые значения cookies evy-platform-access и evy-platform-refresh.",
         "data": {
           "access_token": "Access Token",
           "refresh_token": "Refresh Token"
@@ -20,6 +20,9 @@
     },
     "error": {
       "invalid_auth": "Не удалось авторизоваться с указанными токенами",
+      "cannot_connect": "Сервис Evolute временно недоступен. Повторите попытку позже.",
+      "invalid_response": "Evolute вернул некорректный ответ. Повторите попытку позже.",
+      "cannot_access": "Evolute отклонил запрос аккаунта или не смог его выполнить.",
       "unknown": "Произошла непредвиденная ошибка"
     },
     "abort": {

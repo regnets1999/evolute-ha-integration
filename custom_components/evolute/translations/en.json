@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "Reauthenticate Evolute",
-        "description": "Your Evolute tokens have expired or were revoked. Log in to app.evassist.ru in your browser and paste the new evy-platform-access / evy-platform-refresh cookie values.",
+        "description": "Evolute rejected the account credentials after an attempt to refresh them. Log in to app.evassist.ru in your browser and paste the new evy-platform-access / evy-platform-refresh cookie values.",
         "data": {
           "access_token": "Access Token",
           "refresh_token": "Refresh Token"
@@ -20,6 +20,9 @@
     },
     "error": {
       "invalid_auth": "Could not authenticate with the provided tokens",
+      "cannot_connect": "Evolute is temporarily unavailable. Try again later.",
+      "invalid_response": "Evolute returned an invalid response. Try again later.",
+      "cannot_access": "Evolute denied or could not complete the account request.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {

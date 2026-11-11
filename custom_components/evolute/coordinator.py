@@ -12,7 +12,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import EvoluteClient
+from .client import EvoluteAuthError, EvoluteClient, EvoluteError
 from .const import (
     COMMAND_PENDING_TIMEOUT_SECONDS,
     COMMAND_REFRESH_DELAYS,
@@ -61,25 +61,33 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         self._burst_cancels: list[Any] = []
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
-        """Poll /car-service/tbox/{car_id}/info for every known car."""
+        """Poll Evolute and report confirmed account failures to Home Assistant."""
+        try:
+            return await self._async_poll()
+        except EvoluteAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+
+    async def _async_poll(self) -> dict[str, dict[str, Any]]:
         await self._async_update_details()
 
         data: dict[str, dict[str, Any]] = {}
+        last_error: EvoluteError | None = None
 
         for car in self.cars:
             car_id = car["car_id"]
-            info = await self.client.async_get_car_info(car_id)
-            if info is not None:
-                # Details are merged underneath so a stale slow poll can never mask
-                # fresh telemetry with the same key.
-                data[car_id] = {**self._details.get(car_id, {}), **info}
+            try:
+                info = await self.client.async_get_car_info(car_id)
+            except EvoluteAuthError:
+                raise
+            except EvoluteError as err:
+                last_error = err
+                _LOGGER.debug("Could not update an Evolute vehicle: %s", err)
+                continue
+            # Keep fresh telemetry ahead of cached service data.
+            data[car_id] = {**self._details.get(car_id, {}), **info}
 
-        if not data and self.cars:
-            if self.client.auth_failed:
-                raise ConfigEntryAuthFailed(
-                    "Evolute session expired, please re-enter your access/refresh tokens"
-                )
-            raise UpdateFailed("Unable to reach Evolute (app.evassist.ru)")
+        if not data and last_error is not None:
+            raise UpdateFailed(str(last_error)) from last_error
 
         await self._async_resolve_command_ids()
         self._resolve_pending(data)
@@ -91,8 +99,12 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         if now < self._details_next_fetch:
             return
 
-        details = await self.client.async_get_car_details()
-        if details is None:
+        try:
+            details = await self.client.async_get_car_details()
+        except EvoluteAuthError:
+            raise
+        except EvoluteError as err:
+            _LOGGER.debug("Could not update Evolute service data: %s", err)
             # Back off briefly rather than retrying on every 30s telemetry poll.
             self._details_next_fetch = now + DETAILS_RETRY_INTERVAL_SECONDS
             return
@@ -109,7 +121,11 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         current = (self.data or {}).get(car_id, {})
         baseline = current.get(confirm_key) if confirm_key else None
 
-        accepted, command_id = await self.client.async_send_command(car_id, command)
+        try:
+            accepted, command_id = await self.client.async_send_command(car_id, command)
+        except EvoluteError as err:
+            _LOGGER.warning("Could not send Evolute command: %s", err)
+            return False
         if not accepted:
             return False
 
@@ -159,9 +175,13 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
             for command, pending in list(commands.items()):
                 if pending.command_id is None:
                     continue
-                status = await self.client.async_get_command_status(
-                    car_id, pending.command_id
-                )
+                try:
+                    status = await self.client.async_get_command_status(car_id, pending.command_id)
+                except EvoluteAuthError:
+                    raise
+                except EvoluteError as err:
+                    _LOGGER.debug("Could not update Evolute command status: %s", err)
+                    continue
                 if status not in COMMAND_TERMINAL_STATUSES:
                     continue
                 if status == COMMAND_STATUS_ERROR:
@@ -180,10 +200,8 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         for car_id, commands in list(self._pending.items()):
             car_data = data.get(car_id, {})
             for command, pending in list(commands.items()):
-                confirmed = (
-                    pending.confirm_key is not None
-                    and car_data.get(pending.confirm_key) != pending.baseline
-                )
+                key = pending.confirm_key
+                confirmed = key is not None and key in car_data and car_data[key] != pending.baseline
                 if confirmed or now >= pending.expires_at:
                     del commands[command]
             if not commands:

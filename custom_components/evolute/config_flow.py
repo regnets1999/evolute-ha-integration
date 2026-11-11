@@ -10,10 +10,15 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .client import EvoluteClient
+from .client import (
+    EvoluteAuthError,
+    EvoluteClient,
+    EvoluteError,
+    EvoluteProtocolError,
+    EvoluteUnavailableError,
+)
 from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,9 +37,6 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     client = EvoluteClient(session, data[CONF_ACCESS_TOKEN], data[CONF_REFRESH_TOKEN])
 
     cars = await client.async_get_cars()
-    if cars is None:
-        raise InvalidAuth
-
     title = f"Evolute ({cars[0]['name']})" if cars else "Evolute"
     return {
         "title": title,
@@ -44,6 +46,16 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             CONF_REFRESH_TOKEN: client.refresh_token,
         },
     }
+
+
+def _validation_error(error: EvoluteError) -> str:
+    if isinstance(error, EvoluteAuthError):
+        return "invalid_auth"
+    if isinstance(error, EvoluteUnavailableError):
+        return "cannot_connect"
+    if isinstance(error, EvoluteProtocolError):
+        return "invalid_response"
+    return "cannot_access"
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -63,10 +75,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
+            except EvoluteError as err:
+                errors["base"] = _validation_error(err)
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.error("Unexpected error validating Evolute credentials")
                 errors["base"] = "unknown"
             else:
                 unique_id = info.get("user_id") or user_input[CONF_REFRESH_TOKEN][:32]
@@ -97,10 +109,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
+            except EvoluteError as err:
+                errors["base"] = _validation_error(err)
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+                _LOGGER.error("Unexpected error validating Evolute credentials")
                 errors["base"] = "unknown"
             else:
                 assert self._reauth_entry is not None
@@ -118,7 +130,3 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
         )
-
-
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""

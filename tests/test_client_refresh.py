@@ -10,14 +10,14 @@ from test_config_flow import load_config_flow, response
 class ConcurrentRefreshTests(IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
-        cls.client_class = load_config_flow().EvoluteClient
+        cls.flow = load_config_flow()
 
     def setUp(self):
         self.session = Mock()
         self.persist = Mock()
         self.original = ("test-access", "test-refresh")
         self.rotated = ("rotated-test-access", "rotated-test-refresh")
-        self.client = self.client_class(
+        self.client = self.flow.EvoluteClient(
             self.session, *self.original, tokens_updated_callback=self.persist
         )
         self.telemetry = {"battery_percentage": 80}
@@ -75,6 +75,7 @@ class ConcurrentRefreshTests(IsolatedAsyncioTestCase):
                 request_cars(),
                 self.client.async_get_car_info("test-car"),
                 release_responses(),
+                return_exceptions=True,
             ),
             timeout=5,
         )
@@ -85,7 +86,6 @@ class ConcurrentRefreshTests(IsolatedAsyncioTestCase):
         self.assertEqual(telemetry, self.telemetry)
         self.assertEqual(self.session.post.call_count, 1)
         self.persist.assert_called_once_with(*self.rotated)
-        self.assertFalse(self.client.auth_failed)
         for request in (self.session.request, self.session.get):
             self.assertEqual(request.call_count, 2)
             cookie_names = ("evy-platform-access", "evy-platform-refresh")
@@ -101,26 +101,27 @@ class ConcurrentRefreshTests(IsolatedAsyncioTestCase):
         )
 
     async def test_concurrent_401_responses_share_rejected_refresh(self):
-        with self.assertLogs(self.client_class.__module__, level="ERROR"):
-            result = await self.run_concurrent_requests(refresh_status=403)
+        result = await self.run_concurrent_requests(refresh_status=403)
 
-        self.assertEqual(result, (None, None))
+        for error in result:
+            self.assertIsInstance(error, self.flow.EvoluteAuthError)
+            self.assertIn("HTTP 403", str(error))
         self.assertEqual(self.session.post.call_count, 1)
         self.session.request.assert_called_once()
         self.session.get.assert_called_once()
         self.persist.assert_not_called()
-        self.assertTrue(self.client.auth_failed)
         self.assertEqual(
             (self.client.access_token, self.client.refresh_token), self.original
         )
 
     async def test_request_after_transient_failure_can_refresh_again(self):
-        with self.assertLogs(self.client_class.__module__, level="ERROR"):
-            result = await self.run_concurrent_requests(refresh_status=503)
+        result = await self.run_concurrent_requests(refresh_status=503, delayed_401=True)
 
-        self.assertEqual(result, (None, None))
+        for error in result:
+            self.assertIsInstance(error, self.flow.EvoluteUnavailableError)
+            self.assertIn("HTTP 503", str(error))
         self.assertEqual(self.session.post.call_count, 1)
-        self.assertFalse(self.client.auth_failed)
+        self.persist.assert_not_called()
 
         self.session.request.side_effect = [response(401), response(200, {"rows": []})]
         self.session.post.side_effect = [

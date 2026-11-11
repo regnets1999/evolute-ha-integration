@@ -8,10 +8,10 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .client import EvoluteClient
+from .client import EvoluteAuthError, EvoluteClient, EvoluteError
 from .const import (
     CARD_URL,
     CARD_VERSION,
@@ -124,14 +124,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         tokens_updated_callback=_persist_tokens,
     )
 
-    cars = await client.async_get_cars()
-    if cars is None:
-        # Access token may simply have expired since the entry was created; try once.
-        if not await client.async_refresh_tokens():
-            raise ConfigEntryAuthFailed("Could not authenticate with Evolute")
+    try:
         cars = await client.async_get_cars()
-        if cars is None:
-            raise ConfigEntryAuthFailed("Could not authenticate with Evolute")
+    except EvoluteAuthError as err:
+        raise ConfigEntryAuthFailed(str(err)) from err
+    except EvoluteError as err:
+        raise ConfigEntryNotReady(str(err)) from err
 
     coordinator = EvoluteDataUpdateCoordinator(hass, client, cars)
     await coordinator.async_config_entry_first_refresh()
