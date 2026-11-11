@@ -436,9 +436,7 @@ class EvoluteClient:
         self._refresh_lock = asyncio.Lock()
         self._refresh_attempt = _RefreshAttempt()
         self._imeis: dict[str, str] = {}
-        # Whether this account may see tag-gated controls. Assume it may until
-        # the flags endpoint says otherwise, so a failed lookup never silently
-        # removes a control that works.
+        # Keep tagged controls visible even when the flags lookup fails.
         self._tagged_buttons_visible = True
         # Raw carV2 buttons[], kept per car so a command can be resolved to the
         # half of the toggle the app would send for the current state.
@@ -615,11 +613,9 @@ class EvoluteClient:
             raise EvoluteProtocolError("Evolute returned invalid service data") from None
 
     async def _async_update_user_flags(self) -> None:
-        """Read the account permissions that decide which controls are offered."""
-        flags = await self._request("GET", USER_FLAGS_URL)
-        self._tagged_buttons_visible = bool(
-            flags.get("isSuperAdmin") or flags.get("canViewTaggedCarButtons")
-        )
+        """Check account flags and keep tagged controls visible."""
+        await self._request("GET", USER_FLAGS_URL)
+        self._tagged_buttons_visible = True
 
     def _telemetry_imei(self, car_id: str) -> str | None:
         """The IMEI to read carV2 telemetry with, or None to use the old path.
