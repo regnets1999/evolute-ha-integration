@@ -27,7 +27,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the tokens allow us to connect and return account info."""
+    """Validate connectivity and return account info and the current tokens."""
     session = async_get_clientsession(hass)
     client = EvoluteClient(session, data[CONF_ACCESS_TOKEN], data[CONF_REFRESH_TOKEN])
 
@@ -36,7 +36,14 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         raise InvalidAuth
 
     title = f"Evolute ({cars[0]['name']})" if cars else "Evolute"
-    return {"title": title, "user_id": client.user_id}
+    return {
+        "title": title,
+        "user_id": client.user_id,
+        "tokens": {
+            CONF_ACCESS_TOKEN: client.access_token,
+            CONF_REFRESH_TOKEN: client.refresh_token,
+        },
+    }
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -65,7 +72,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 unique_id = info.get("user_id") or user_input[CONF_REFRESH_TOKEN][:32]
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=info["title"], data=user_input)
+                return self.async_create_entry(
+                    title=info["title"], data={**user_input, **info["tokens"]}
+                )
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
@@ -87,7 +96,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                await validate_input(self.hass, user_input)
+                info = await validate_input(self.hass, user_input)
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
@@ -96,7 +105,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 assert self._reauth_entry is not None
                 self.hass.config_entries.async_update_entry(
-                    self._reauth_entry, data=user_input
+                    self._reauth_entry,
+                    data={**self._reauth_entry.data, **info["tokens"]},
                 )
                 await self.hass.config_entries.async_reload(
                     self._reauth_entry.entry_id
