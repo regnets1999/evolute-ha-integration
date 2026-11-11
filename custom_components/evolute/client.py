@@ -1,6 +1,7 @@
 """Evolute (app.evassist.ru) API client for Home Assistant."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -364,6 +365,9 @@ class EvoluteClient:
         self.access_token = access_token
         self.refresh_token = refresh_token
         self._tokens_updated_callback = tokens_updated_callback
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_generation = 0
+        self._last_refresh_succeeded = False
         self.auth_failed = False
         self._imeis: dict[str, str] = {}
         # Whether this account may see tag-gated controls. Assume it may until
@@ -401,7 +405,31 @@ class EvoluteClient:
         }
 
     async def async_refresh_tokens(self) -> bool:
-        """Refresh the access/refresh token pair. Returns False if unrecoverable."""
+        """Refresh the current token pair, sharing any concurrent attempt."""
+        return await self._async_refresh_if_needed(
+            self._cookies(), self._refresh_generation
+        )
+
+    async def _async_refresh_if_needed(
+        self, sent_cookies: dict[str, str], refresh_generation: int
+    ) -> bool:
+        """Refresh the credentials used by a request, or reuse an attempt's result."""
+        async with self._refresh_lock:
+            if sent_cookies != self._cookies():
+                return True
+            if refresh_generation != self._refresh_generation:
+                return self._last_refresh_succeeded
+
+            self._last_refresh_succeeded = False
+            try:
+                self._last_refresh_succeeded = await self._async_refresh_tokens()
+                return self._last_refresh_succeeded
+            finally:
+                # Requests already sent share a failure; a later request can retry.
+                self._refresh_generation += 1
+
+    async def _async_refresh_tokens(self) -> bool:
+        """Request and persist a new token pair while holding the refresh lock."""
         try:
             async with self._session.post(
                 REFRESH_URL,
@@ -530,11 +558,13 @@ class EvoluteClient:
             if etag:
                 headers["if-none-match"] = etag
 
+            sent_cookies = self._cookies()
+            refresh_generation = self._refresh_generation
             try:
                 async with self._session.get(
                     url,
                     headers=headers,
-                    cookies=self._cookies(),
+                    cookies=sent_cookies,
                     timeout=REQUEST_TIMEOUT,
                 ) as resp:
                     if resp.status == 304:
@@ -542,7 +572,10 @@ class EvoluteClient:
 
                     if resp.status == 401 and not refreshed:
                         refreshed = True
-                        if not await self.async_refresh_tokens():
+                        resp.release()
+                        if not await self._async_refresh_if_needed(
+                            sent_cookies, refresh_generation
+                        ):
                             return None
                         continue
 
@@ -674,17 +707,22 @@ class EvoluteClient:
         self, method: str, url: str, json_body: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         for attempt in range(2):
+            sent_cookies = self._cookies()
+            refresh_generation = self._refresh_generation
             try:
                 async with self._session.request(
                     method,
                     url,
                     json=json_body,
                     headers=self._headers(),
-                    cookies=self._cookies(),
+                    cookies=sent_cookies,
                     timeout=REQUEST_TIMEOUT,
                 ) as resp:
                     if resp.status == 401 and attempt == 0:
-                        if not await self.async_refresh_tokens():
+                        resp.release()
+                        if not await self._async_refresh_if_needed(
+                            sent_cookies, refresh_generation
+                        ):
                             return None
                         continue
 

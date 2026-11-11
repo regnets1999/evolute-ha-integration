@@ -49,7 +49,7 @@ def load_config_flow():
 def response(status, payload=None):
     context = MagicMock()
     context.__aenter__.return_value = SimpleNamespace(
-        status=status, json=AsyncMock(return_value=payload)
+        status=status, json=AsyncMock(return_value=payload), release=Mock()
     )
     return context
 
