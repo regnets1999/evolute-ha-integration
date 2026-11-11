@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .client import EvoluteAuthError, EvoluteClient, EvoluteError
+from .client import EvoluteAuthError, EvoluteClient, EvoluteError, get_account_id
 from .const import (
     CARD_URL,
     CARD_VERSION,
@@ -117,11 +117,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             },
         )
 
+    access_token = entry.data[CONF_ACCESS_TOKEN]
     client = EvoluteClient(
         session,
-        entry.data[CONF_ACCESS_TOKEN],
+        access_token,
         entry.data[CONF_REFRESH_TOKEN],
         tokens_updated_callback=_persist_tokens,
+        expected_account_id=get_account_id(access_token),
     )
 
     try:

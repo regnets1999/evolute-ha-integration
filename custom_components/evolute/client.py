@@ -94,13 +94,27 @@ async def _async_read_object(
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
     """Decode a JWT payload without verifying the signature."""
     try:
-        payload_b64 = token.split(".")[1]
+        header, payload_b64, signature = token.split(".")
+        if not (header and payload_b64 and signature):
+            return {}
         padding = "=" * (-len(payload_b64) % 4)
         payload = base64.urlsafe_b64decode(payload_b64 + padding)
         data = json.loads(payload)
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def get_account_id(access_token: str | None) -> str | None:
+    """Read a stable account ID from a current or previously accepted access JWT."""
+    if not isinstance(access_token, str):
+        return None
+    payload = _decode_jwt_payload(access_token)
+    for claim in ("_id", "userId"):
+        value = payload.get(claim)
+        if isinstance(value, str) and value and value == value.strip():
+            return value
+    return None
 
 
 def _local_utc_offset_hours() -> int:
@@ -410,12 +424,15 @@ class EvoluteClient:
         access_token: str,
         refresh_token: str,
         tokens_updated_callback: Optional[Callable[[str, str], None]] = None,
+        *,
+        expected_account_id: str | None = None,
     ) -> None:
         """Initialize the client."""
         self._session = session
         self.access_token = access_token
         self.refresh_token = refresh_token
         self._tokens_updated_callback = tokens_updated_callback
+        self._expected_account_id = expected_account_id
         self._refresh_lock = asyncio.Lock()
         self._refresh_attempt = _RefreshAttempt()
         self._imeis: dict[str, str] = {}
@@ -435,8 +452,7 @@ class EvoluteClient:
     @property
     def user_id(self) -> str | None:
         """Return the account id embedded in the current access token, if any."""
-        payload = _decode_jwt_payload(self.access_token)
-        return payload.get("_id") or payload.get("userId")
+        return get_account_id(self.access_token)
 
     def _cookies(self) -> dict[str, str]:
         return {
@@ -508,6 +524,13 @@ class EvoluteClient:
             not isinstance(refresh, str) or (refresh and not refresh.strip())
         ):
             raise EvoluteProtocolError("Evolute refresh response contains an invalid refresh token")
+
+        if self._expected_account_id is not None:
+            account_id = get_account_id(access)
+            if account_id is None:
+                raise EvoluteProtocolError("Refreshed Evolute access token lacks an account ID")
+            if account_id != self._expected_account_id:
+                raise EvoluteAuthError("Refreshed Evolute tokens belong to a different account")
 
         self.access_token = access
         if refresh:

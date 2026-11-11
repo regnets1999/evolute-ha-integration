@@ -18,6 +18,7 @@ from .client import (
     EvoluteError,
     EvoluteProtocolError,
     EvoluteUnavailableError,
+    get_account_id,
 )
 from .const import CONF_ACCESS_TOKEN, CONF_REFRESH_TOKEN, DOMAIN
 
@@ -31,16 +32,23 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+class _AccountIdentityError(EvoluteError):
+    """An account verification failure with a config flow translation key."""
+
+
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate connectivity and return account info and the current tokens."""
     session = async_get_clientsession(hass)
     client = EvoluteClient(session, data[CONF_ACCESS_TOKEN], data[CONF_REFRESH_TOKEN])
 
     cars = await client.async_get_cars()
+    user_id = client.user_id
+    if user_id is None:
+        raise _AccountIdentityError("account_id_missing")
     title = f"Evolute ({cars[0]['name']})" if cars else "Evolute"
     return {
         "title": title,
-        "user_id": client.user_id,
+        "user_id": user_id,
         "tokens": {
             CONF_ACCESS_TOKEN: client.access_token,
             CONF_REFRESH_TOKEN: client.refresh_token,
@@ -48,7 +56,25 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     }
 
 
+async def _validate_reauth(
+    hass: HomeAssistant, entry: ConfigEntry, data: dict[str, Any]
+) -> dict[str, Any]:
+    # Older unique IDs can contain a refresh token fragment. The previously
+    # saved access token provides the account identity independently of that ID.
+    expected_id = get_account_id(entry.data.get(CONF_ACCESS_TOKEN))
+    if expected_id is None:
+        raise _AccountIdentityError("account_unverified")
+    info = await validate_input(hass, data)
+    if get_account_id(entry.data.get(CONF_ACCESS_TOKEN)) != expected_id:
+        raise _AccountIdentityError("account_unverified")
+    if info["user_id"] != expected_id:
+        raise _AccountIdentityError("account_mismatch")
+    return info
+
+
 def _validation_error(error: EvoluteError) -> str:
+    if isinstance(error, _AccountIdentityError):
+        return str(error)
     if isinstance(error, EvoluteAuthError):
         return "invalid_auth"
     if isinstance(error, EvoluteUnavailableError):
@@ -81,9 +107,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("Unexpected error validating Evolute credentials")
                 errors["base"] = "unknown"
             else:
-                unique_id = info.get("user_id") or user_input[CONF_REFRESH_TOKEN][:32]
-                await self.async_set_unique_id(unique_id)
+                account_id = info["user_id"]
+                await self.async_set_unique_id(account_id)
                 self._abort_if_unique_id_configured()
+                # Legacy entries may have a different unique ID for this account.
+                if any(
+                    get_account_id(entry.data.get(CONF_ACCESS_TOKEN)) == account_id
+                    for entry in self.hass.config_entries.async_entries(DOMAIN)
+                ):
+                    return self.async_abort(reason="already_configured")
                 return self.async_create_entry(
                     title=info["title"], data={**user_input, **info["tokens"]}
                 )
@@ -107,15 +139,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Ask the user for fresh tokens."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            assert self._reauth_entry is not None
             try:
-                info = await validate_input(self.hass, user_input)
+                info = await _validate_reauth(self.hass, self._reauth_entry, user_input)
             except EvoluteError as err:
                 errors["base"] = _validation_error(err)
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.error("Unexpected error validating Evolute credentials")
                 errors["base"] = "unknown"
             else:
-                assert self._reauth_entry is not None
                 self.hass.config_entries.async_update_entry(
                     self._reauth_entry,
                     data={**self._reauth_entry.data, **info["tokens"]},

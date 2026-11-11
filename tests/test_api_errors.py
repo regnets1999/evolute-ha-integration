@@ -8,6 +8,7 @@ from test_config_flow import (
     ConfigEntryAuthFailed,
     ConfigEntryNotReady,
     UpdateFailed,
+    fake_access_jwt,
     load_evolute_module,
     response,
 )
@@ -96,6 +97,44 @@ class ApiErrorTests(IsolatedAsyncioTestCase):
                 "extra": True,
             },
         )
+
+    async def test_runtime_refresh_does_not_switch_account(self):
+        self.entry.data["access_token"] = fake_access_jwt({"_id": "test-account"})
+        self.session.request.return_value = response(401)
+        self.session.post.return_value = response(
+            200, {"accessToken": fake_access_jwt({"_id": "another-test-account"})}
+        )
+
+        with self.assertRaisesRegex(ConfigEntryAuthFailed, "different account"):
+            await self.setup_entry()
+
+        self.hass.config_entries.async_update_entry.assert_not_called()
+        self.session.request.assert_called_once()
+
+    async def test_runtime_refresh_persists_tokens_for_the_same_account(self):
+        self.entry.data["access_token"] = fake_access_jwt({"_id": "test-account"})
+        rotated = fake_access_jwt({"userId": "test-account"})
+        self.session.request.side_effect = [
+            response(401), response(200, {"rows": []}), response(200, {}),
+        ]
+        self.session.post.return_value = response(200, {"accessToken": rotated})
+
+        self.assertTrue(await self.setup_entry())
+
+        self.hass.config_entries.async_update_entry.assert_called_once_with(
+            self.entry, data={**self.entry.data, "access_token": rotated}
+        )
+
+    async def test_runtime_refresh_cannot_replace_identified_token_with_unknown_account(self):
+        self.entry.data["access_token"] = fake_access_jwt({"_id": "test-account"})
+        self.session.request.return_value = response(401)
+        self.session.post.return_value = response(200, {"accessToken": fake_access_jwt({})})
+
+        with self.assertRaisesRegex(ConfigEntryNotReady, "lacks an account ID"):
+            await self.setup_entry()
+
+        self.hass.config_entries.async_update_entry.assert_not_called()
+        self.session.request.assert_called_once()
 
     async def test_refresh_timeout_is_temporary(self):
         self.session.request.return_value = response(401)

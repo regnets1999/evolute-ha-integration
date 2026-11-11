@@ -23,6 +23,9 @@
       "cannot_connect": "Evolute is temporarily unavailable. Try again later.",
       "invalid_response": "Evolute returned an invalid response. Try again later.",
       "cannot_access": "Evolute denied or could not complete the account request.",
+      "account_id_missing": "The verified Evolute access token does not contain an account ID.",
+      "account_unverified": "The account for this existing Evolute entry could not be verified. Its tokens were not changed.",
+      "account_mismatch": "These tokens belong to a different Evolute account. Sign in to the account used by this entry.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
