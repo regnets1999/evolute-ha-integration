@@ -1,6 +1,7 @@
 {
   "domain": "evolute",
   "name": "Evolute",
+  "categories": ["vehicles_transport.cars_evs"],
   "codeowners": ["@regnets1999"],
   "config_flow": true,
   "dependencies": [],
