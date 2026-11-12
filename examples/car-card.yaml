@@ -1,7 +1,7 @@
 # Evolute - карточка со схемой автомобиля
 #
-# Замените CAR_ID_HERE на ID вашего автомобиля везде в этом файле.
-# Его можно узнать из entity_id любого сенсора Evolute,
+# Замените CAR_ID_HERE на локальный UUID автомобиля в Home Assistant.
+# Его можно узнать из предложенного entity_id сенсора Evolute,
 # например sensor.evolute_CAR_ID_HERE_battery_percentage
 #
 # SVG-файлы и карточка кнопки копируются интеграцией в /config/www/evolute/

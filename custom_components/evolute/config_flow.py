@@ -45,7 +45,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     user_id = client.user_id
     if user_id is None:
         raise _AccountIdentityError("account_id_missing")
-    title = f"Evolute ({cars[0]['name']})" if cars else "Evolute"
+    model = cars[0]["model"] if len(cars) == 1 else None
+    title = f"Evolute ({model})" if model and model != "Evolute" else "Evolute"
     return {
         "title": title,
         "user_id": user_id,

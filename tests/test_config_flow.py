@@ -52,6 +52,19 @@ class CoordinatorEntityStub:
         return self._attr_device_info
 
 
+class StoreStub:
+    def __init__(self, hass, version, key, *, private, atomic_writes):
+        assert version == 1 and private and atomic_writes
+        self.hass = hass
+        self.path = hass.storage_dir / key
+
+    async def async_load(self):
+        return await self.hass.load_identity_store(self.path)
+
+    async def async_save(self, data):
+        await self.hass.save_identity_store(self.path, data)
+
+
 def load_evolute_module(name):
     """Load integration code with offline Home Assistant and aiohttp stubs."""
     package = ModuleType("_evolute_test")
@@ -80,6 +93,7 @@ def load_evolute_module(name):
             async_get_clientsession=lambda hass: hass.session
         ),
         "homeassistant.helpers.event": SimpleNamespace(async_call_later=Mock()),
+        "homeassistant.helpers.storage": SimpleNamespace(Store=StoreStub),
         "homeassistant.helpers.device_registry": SimpleNamespace(DeviceInfo=dict),
         "homeassistant.helpers.entity_platform": SimpleNamespace(AddEntitiesCallback=object),
         "homeassistant.helpers.update_coordinator": SimpleNamespace(

@@ -59,8 +59,8 @@ class EvoluteButton(CoordinatorEntity, ButtonEntity):
         self._idle_icon = icon
 
         self._attr_name = name
-        self._attr_unique_id = f"evolute_{self._car_id}_{button_key}"
-        self.entity_id = f"button.evolute_{self._car_id}_{button_key}"
+        self._attr_unique_id = f"evolute_{car['local_id']}_{button_key}"
+        self.entity_id = f"button.{self._attr_unique_id}"
         self._attr_device_info = build_device_info(car)
 
     @property
@@ -79,7 +79,7 @@ class EvoluteButton(CoordinatorEntity, ButtonEntity):
                 f"Evolute command '{self._command}' is currently blocked by the vehicle."
             )
 
-        _LOGGER.info("Sending command %s to car %s", self._command, self._car_id)
+        _LOGGER.info("Sending Evolute command %s", self._command)
 
         success = await self.coordinator.async_send_command(
             self._car_id, self._command, self._confirm_key

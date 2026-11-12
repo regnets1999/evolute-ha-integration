@@ -1,12 +1,13 @@
 {
   "domain": "evolute",
   "name": "Evolute",
-  "codeowners": ["@dsultanr"],
+  "codeowners": ["@regnets1999"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/dsultanr/evolute-ha-integration",
+  "documentation": "https://github.com/regnets1999/evolute-ha-integration",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/regnets1999/evolute-ha-integration/issues",
   "requirements": [],
-  "version": "1.4.3"
+  "version": "1.5.0"
 }

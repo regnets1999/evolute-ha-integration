@@ -1,8 +1,8 @@
 # Интеграция Evolute для Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-
 Интеграция Home Assistant для автомобилей Evolute (i-Joy, i-Pro, i-Sky, i-Space и т.д.) через облачный сервис app.evassist.ru.
+
+Форк `regnets1999/evolute-ha-integration` подготовлен к первому выпуску `1.5.0` для Home Assistant 2026.11 и новее. [Описание версии](docs/release-1.5.0.md) · [Требования Marketplace](docs/marketplace.md)
 
 <img width="1073" height="1653" alt="image" src="https://github.com/user-attachments/assets/bacb9294-98a1-44e8-bc8f-9967ff0c5f67" />
 
@@ -38,25 +38,20 @@
 
 ## Установка
 
-### HACS (Рекомендуется)
+### Marketplace для новой установки
 
-1. Откройте HACS в вашем Home Assistant
-2. Перейдите в раздел "Интеграции"
-3. Нажмите три точки в правом верхнем углу
-4. Выберите "Пользовательские репозитории"
-5. Добавьте URL репозитория: `https://github.com/dsultanr/evolute-ha-integration`
-6. Категория: "Интеграция"
-7. Нажмите "Добавить"
-8. Найдите "Evolute"
-9. Нажмите "Загрузить"
-10. Перезапустите Home Assistant
+1. В Home Assistant 2026.11 или новее откройте **Настройки → Marketplace → Add from link**.
+2. Укажите `regnets1999/evolute-ha-integration`, при необходимости подключите GitHub и выберите тип **Integration**.
+3. Откройте страницу форка и установите опубликованную версию. Если Home Assistant предложит перезапуск, выполните его перед настройкой.
+
+Переход с оригинального Evolute начинается после публикации 1.5.0. Подготовьте откат и сделайте свежий backup VM100 в Proxmox непосредственно перед [чистой установкой форка](docs/marketplace.md#переход-с-исходного-репозитория). Старые `entity_id` не мигрируют. После установки обновите ссылки в дашбордах и автоматизациях.
 
 ### Ручная установка
 
-1. Скопируйте директорию `custom_components/evolute` в директорию `custom_components` вашего Home Assistant
-2. Перезапустите Home Assistant
+1. Скопируйте директорию `custom_components/evolute` из выбранной версии форка в директорию `custom_components` вашего Home Assistant.
+2. Перезапустите Home Assistant. Для обновления уже настроенного форка с локальными UUID используйте существующую запись и сохраните хранилище идентификаторов.
 
-## Настройка
+## Настройка новой записи
 
 1. Перейдите в **Настройки** → **Устройства и службы**
 2. Нажмите **"+ ДОБАВИТЬ ИНТЕГРАЦИЮ"**
@@ -65,6 +60,8 @@
 5. Нажмите **Отправить**
 
 Все автомобили вашего аккаунта появятся автоматически со всеми доступными сенсорами.
+
+Устройства называются по модели с постоянным локальным номером, например `i-Joy 1` и `i-Joy 2`. Их можно переименовать в Home Assistant. Идентификаторы сущностей используют локальный UUID автомобиля. [Условия сохранения UUID](docs/compatibility.md)
 
 ## Сенсоры
 
@@ -224,7 +221,7 @@ require_hold: true    # false — обычное касание (для безо
 
 ### Пример карточки Dashboard
 
-Готовый пример: [examples/car-card.yaml](examples/car-card.yaml). Замените `CAR_ID_HERE` на ID вашего автомобиля (виден в entity_id любого сенсора, например `sensor.evolute_68f2.._battery_percentage`).
+В [готовом примере карточки](examples/car-card.yaml) замените `CAR_ID_HERE` на локальный UUID из `entity_id` сенсора Evolute. В предложенном имени `sensor.evolute_<uuid>_battery_percentage` UUID записан 32 шестнадцатеричными символами без дефисов. Для вручную переименованных сущностей укажите их фактические `entity_id` целиком.
 
 Кнопки управления в примере используют встроенную карточку `custom:evolute-hold-button` (см. выше). Сторонние HACS-карточки `card-mod`/`button-card` не нужны.
 
@@ -325,7 +322,7 @@ automation:
 
 ## Поддержка
 
-- **Проблемы**: [GitHub Issues](https://github.com/dsultanr/evolute-ha-integration/issues)
+- [GitHub Issues форка](https://github.com/regnets1999/evolute-ha-integration/issues)
 
 ## Лицензия
 

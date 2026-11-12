@@ -39,9 +39,9 @@ class EvoluteDeviceTracker(CoordinatorEntity, TrackerEntity):
         super().__init__(coordinator)
         self._car_id = car["car_id"]
 
-        self._attr_name = car.get("name") or f"Evolute {self._car_id}"
-        self._attr_unique_id = f"evolute_{self._car_id}_tracker"
-        self.entity_id = f"device_tracker.evolute_{self._car_id}"
+        self._attr_name = car["name"]
+        self._attr_unique_id = f"evolute_{car['local_id']}_tracker"
+        self.entity_id = f"device_tracker.evolute_{car['local_id']}"
         self._attr_icon = "mdi:car"
         # The account carries a rendering of the exact model/colour; use it as the
         # entity picture so the map and tile cards show the actual car.
@@ -103,9 +103,8 @@ class EvoluteDeviceTracker(CoordinatorEntity, TrackerEntity):
             if data.get(key) is not None:
                 attributes[key] = data[key]
 
-        # Static vehicle identity, only available from /car/v2/search at setup.
+        # Public vehicle metadata from /car/v2/search at setup.
         for attribute, car_key in (
-            ("vin", "vin"),
             ("modification", "modification"),
             ("model_year", "model_year"),
             ("color", "color"),

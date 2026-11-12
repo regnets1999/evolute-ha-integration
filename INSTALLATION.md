@@ -1,5 +1,7 @@
 # Инструкция по установке Evolute HA Integration
 
+Эти шаги предназначены для новой установки форка на Home Assistant 2026.11 или новее. Если установлен оригинальный Evolute, сначала ознакомьтесь с [порядком перехода](docs/marketplace.md#переход-с-исходного-репозитория) и последствиями смены идентификаторов.
+
 ## Вариант 1: Локальная установка
 
 ### Шаг 1: Копирование файлов
@@ -30,26 +32,12 @@ sudo systemctl restart home-assistant@homeassistant
 5. Вставьте Access Token и Refresh Token
 6. Нажмите **Submit**
 
-## Вариант 2: Установка через HACS
+## Вариант 2. Установка через Marketplace
 
-### Предварительные требования
-1. Установлен HACS в Home Assistant
-
-### Шаги:
-
-#### 1. Добавьте в HACS
-1. Откройте HACS в Home Assistant
-2. Перейдите в "Integrations"
-3. Нажмите три точки (⋮) → "Custom repositories"
-4. URL: `https://github.com/dsultanr/evolute-ha-integration`
-5. Category: "Integration"
-6. Нажмите "Add"
-
-#### 2. Установите интеграцию
-1. Найдите "Evolute" в HACS
-2. Нажмите "Download"
-3. Перезапустите Home Assistant
-4. Добавьте интеграцию через Settings → Devices & Services (см. Шаг 3-4 выше)
+1. Откройте **Настройки → Marketplace → Add from link**.
+2. Укажите `regnets1999/evolute-ha-integration`, подключите GitHub по запросу и при необходимости выберите тип **Integration**.
+3. Откройте страницу форка и установите опубликованную версию. Если Home Assistant предложит перезапуск, выполните его перед настройкой.
+4. Получите токены и добавьте Evolute через **Настройки → Устройства и службы**, как описано в шагах 3 и 4 выше.
 
 ## Проверка установки
 
@@ -67,6 +55,8 @@ tail -f /home/homeassistant/.homeassistant/home-assistant.log | grep evolute
 2. Должны отображаться ваши автомобили
 
 ## Удаление интеграции
+
+Удаление может повлиять на привязки, историю и ссылки в автоматизациях. Для перехода на 1.5.0 действует отдельный [порядок чистой установки](docs/marketplace.md#переход-с-исходного-репозитория).
 
 ### Через UI (рекомендуется)
 1. Settings → Devices & Services
@@ -89,17 +79,16 @@ sudo systemctl restart home-assistant@homeassistant
 
 ### Ошибки аутентификации / запрос повторной авторизации
 1. Убедитесь, что токены скопированы без лишних пробелов и переносов строк
-2. Если интеграция запросила reauth — `refresh_token` был отозван сервером, получите новые токены из браузера
+2. Если Home Assistant запросил reauth, получите новую пару в браузере для того же аккаунта и введите её в форме существующей записи.
 3. Проверьте логи: Settings → System → Logs
 
 ### Сенсоры показывают "unavailable"
 1. Проверьте интернет-соединение
 2. Проверьте доступность app.evassist.ru и видимость автомобиля в приложении
 3. Проверьте логи на наличие HTTP-ошибок
-4. Попробуйте удалить и заново добавить интеграцию
 
 ## Дополнительная информация
 
 - **Документация**: [README.md](README.md)
-- **GitHub**: https://github.com/dsultanr/evolute-ha-integration
-- **Issues**: https://github.com/dsultanr/evolute-ha-integration/issues
+- [Репозиторий форка](https://github.com/regnets1999/evolute-ha-integration)
+- [GitHub Issues форка](https://github.com/regnets1999/evolute-ha-integration/issues)

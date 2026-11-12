@@ -53,8 +53,8 @@ class EvoluteBinarySensor(CoordinatorEntity, BinarySensorEntity):
         self._state_key = state_key
 
         self._attr_name = name
-        self._attr_unique_id = f"evolute_{self._car_id}_{sensor_key}"
-        self.entity_id = f"binary_sensor.evolute_{self._car_id}_{sensor_key}"
+        self._attr_unique_id = f"evolute_{car['local_id']}_{sensor_key}"
+        self.entity_id = f"binary_sensor.{self._attr_unique_id}"
         self._attr_device_class = device_class
 
         self._attr_device_info = build_device_info(car)

@@ -186,9 +186,8 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
                     continue
                 if status == COMMAND_STATUS_ERROR:
                     _LOGGER.warning(
-                        "Evolute command %s for car %s was rejected by the vehicle",
+                        "Evolute command %s was rejected by the vehicle",
                         command,
-                        car_id,
                     )
                 del commands[command]
             if not commands:

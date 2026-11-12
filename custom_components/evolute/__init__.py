@@ -20,6 +20,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import EvoluteDataUpdateCoordinator
+from .vehicle_identity import async_assign_vehicle_identities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except EvoluteError as err:
         raise ConfigEntryNotReady(str(err)) from err
 
+    await async_assign_vehicle_identities(hass, cars)
     coordinator = EvoluteDataUpdateCoordinator(hass, client, cars)
     await coordinator.async_config_entry_first_refresh()
 

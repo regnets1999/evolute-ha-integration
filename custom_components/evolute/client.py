@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
+from urllib.parse import unquote
 
 import aiohttp
 
@@ -123,6 +124,17 @@ def _local_utc_offset_hours() -> int:
     if offset is None:
         return 0
     return int(offset.total_seconds() // 3600)
+
+
+def _public_vehicle_metadata(value: Any, private_values: tuple[str, ...]) -> Any:
+    """Keep scalar display metadata that does not contain a vehicle identifier."""
+    if isinstance(value, str):
+        original = value.casefold()
+        decoded = unquote(value).casefold()
+        return None if any(item in original or item in decoded for item in private_values) else value
+    if isinstance(value, (int, float)) and str(value) not in private_values:
+        return value
+    return None
 
 
 def _parse_iso_timestamp(raw: Any) -> Any:
@@ -589,17 +601,19 @@ class EvoluteClient:
             imei = details.get("imei")
             if imei:
                 self._imeis[car_id] = str(imei)
+            private_values = tuple(
+                str(value).casefold() for value in (car_id, row.get("vin"), imei) if value
+            )
+            model_name = _public_vehicle_metadata(model.get("name"), private_values)
+            model_name = model_name.strip() if isinstance(model_name, str) else ""
             cars.append(
                 {
                     "car_id": car_id,
-                    "vin": row.get("vin"),
-                    "brand": row.get("brand") or "Evolute",
-                    "model": model.get("name") or "Evolute",
-                    "modification": model.get("modname"),
-                    "model_year": model.get("modelYear"),
-                    "color": model.get("color"),
-                    "image": images.get("side"),
-                    "name": row.get("vin") or model.get("name") or car_id,
+                    "model": model_name or "Evolute",
+                    "modification": _public_vehicle_metadata(model.get("modname"), private_values),
+                    "model_year": _public_vehicle_metadata(model.get("modelYear"), private_values),
+                    "color": _public_vehicle_metadata(model.get("color"), private_values),
+                    "image": _public_vehicle_metadata(images.get("side"), private_values),
                 }
             )
         return cars
@@ -664,9 +678,8 @@ class EvoluteClient:
 
                     if resp.status == 404 and imei and not fell_back:
                         _LOGGER.warning(
-                            "Evolute carV2 telemetry has no profile for %s "
-                            "(HTTP 404); using the legacy tbox endpoint instead",
-                            car_id,
+                            "Evolute carV2 telemetry has no profile (HTTP 404). "
+                            "Using the legacy tbox endpoint",
                         )
                         self._no_v2.add(car_id)
                         self._buttons.pop(car_id, None)
@@ -752,9 +765,8 @@ class EvoluteClient:
         fn_name = self._resolve_v2_command(car_id, command)
         if fn_name is None:
             _LOGGER.warning(
-                "Evolute command %s has no matching carV2 button for %s",
+                "Evolute command %s has no matching carV2 button",
                 command,
-                car_id,
             )
             return False, None
 

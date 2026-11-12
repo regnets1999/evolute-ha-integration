@@ -58,8 +58,8 @@ class EvoluteSensor(CoordinatorEntity, SensorEntity):
         self._state_key = state_key
 
         self._attr_name = name
-        self._attr_unique_id = f"evolute_{self._car_id}_{sensor_key}"
-        self.entity_id = f"sensor.evolute_{self._car_id}_{sensor_key}"
+        self._attr_unique_id = f"evolute_{car['local_id']}_{sensor_key}"
+        self.entity_id = f"sensor.{self._attr_unique_id}"
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_icon = icon

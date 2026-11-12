@@ -15,16 +15,14 @@ def build_device_info(car: dict[str, Any]) -> DeviceInfo:
     model_year = car.get("model_year")
 
     info: DeviceInfo = {
-        "identifiers": {(DOMAIN, car["car_id"])},
-        "name": car.get("name") or f"Evolute {car['car_id']}",
+        "identifiers": {(DOMAIN, car["local_id"])},
+        "name": car["name"],
         "manufacturer": "Evolute",
         "model": model,
         "suggested_area": "Garage",
     }
     if modification:
         info["model_id"] = modification
-    if car.get("vin"):
-        info["serial_number"] = car["vin"]
     if model_year:
         info["hw_version"] = str(model_year)
     return info
