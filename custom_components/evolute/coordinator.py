@@ -14,7 +14,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .client import EvoluteAuthError, EvoluteClient, EvoluteError
 from .const import (
+    COMMAND_CANCEL,
     COMMAND_PENDING_TIMEOUT_SECONDS,
+    COMMAND_PREPARE,
     COMMAND_REFRESH_DELAYS,
     COMMAND_STATUS_ERROR,
     COMMAND_TERMINAL_STATUSES,
@@ -122,7 +124,21 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         baseline = current.get(confirm_key) if confirm_key else None
 
         try:
-            accepted, command_id = await self.client.async_send_command(car_id, command)
+            if command == COMMAND_PREPARE:
+                duration = current.get("prep_script_time")
+                options = current.get("prep_script_time_options")
+                if (
+                    type(duration) is not int or duration <= 0
+                    or (isinstance(options, list) and not any(
+                        type(option) is int and option == duration for option in options
+                    ))
+                ):
+                    duration = None
+                accepted, command_id = await self.client.async_send_command(
+                    car_id, command, duration_minutes=duration
+                )
+            else:
+                accepted, command_id = await self.client.async_send_command(car_id, command)
         except EvoluteError as err:
             _LOGGER.warning("Could not send Evolute command: %s", err)
             return False
@@ -201,6 +217,8 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
             for command, pending in list(commands.items()):
                 key = pending.confirm_key
                 confirmed = key is not None and key in car_data and car_data[key] != pending.baseline
+                if key == "prep_running" and command in (COMMAND_PREPARE, COMMAND_CANCEL):
+                    confirmed = car_data.get(key) is (command == COMMAND_PREPARE)
                 if confirmed or now >= pending.expires_at:
                     del commands[command]
             if not commands:

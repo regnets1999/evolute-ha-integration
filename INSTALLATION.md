@@ -4,20 +4,13 @@
 
 ## Вариант 1: Локальная установка
 
-### Шаг 1: Копирование файлов
-```bash
-# Скопируйте папку custom_components/evolute в директорию Home Assistant
-cp -r custom_components/evolute /path/to/homeassistant/custom_components/
+### Шаг 1. Копирование файлов
 
-# Например, если Home Assistant установлен в /home/homeassistant/.homeassistant:
-cp -r custom_components/evolute /home/homeassistant/.homeassistant/custom_components/
-```
+Скопируйте каталог `custom_components/evolute` из архива релиза в каталог `custom_components` вашей конфигурации Home Assistant. Итоговый путь относительно каталога конфигурации — `custom_components/evolute/manifest.json`.
 
-### Шаг 2: Перезапуск Home Assistant
-```bash
-sudo systemctl restart home-assistant@homeassistant
-# Или через UI: Settings → System → Restart
-```
+### Шаг 2. Перезапуск Home Assistant
+
+Перезапустите Home Assistant через **Настройки → Система**.
 
 ### Шаг 3: Получение токенов
 1. Откройте https://app.evassist.ru в браузере и войдите (телефон + SMS-код)
@@ -35,16 +28,15 @@ sudo systemctl restart home-assistant@homeassistant
 ## Вариант 2. Установка через Marketplace
 
 1. Откройте **Настройки → Marketplace → Add from link**.
-2. Укажите `regnets1999/evolute-ha-integration`, подключите GitHub по запросу и при необходимости выберите тип **Integration**.
+2. Укажите ссылку на [репозиторий форка](https://github.com/regnets1999/evolute-ha-integration), подключите GitHub по запросу и при необходимости выберите тип **Integration**.
 3. Откройте страницу форка и установите опубликованную версию. Если Home Assistant предложит перезапуск, выполните его перед настройкой.
 4. Получите токены и добавьте Evolute через **Настройки → Устройства и службы**, как описано в шагах 3 и 4 выше.
 
 ## Проверка установки
 
-### 1. Проверьте логи
-```bash
-tail -f /home/homeassistant/.homeassistant/home-assistant.log | grep evolute
-```
+### 1. Проверьте журнал
+
+Откройте **Настройки → Система → Журналы** и проверьте сообщения Evolute.
 
 ### 2. Проверьте наличие сенсоров
 1. Перейдите в **Developer Tools** → **States**
@@ -56,24 +48,20 @@ tail -f /home/homeassistant/.homeassistant/home-assistant.log | grep evolute
 
 ## Удаление интеграции
 
-Удаление может повлиять на привязки, историю и ссылки в автоматизациях. Для перехода на 1.5.0 действует отдельный [порядок чистой установки](docs/marketplace.md#переход-с-исходного-репозитория).
+Удаление может повлиять на привязки, историю и ссылки в автоматизациях. Для перехода с оригинала действует [порядок чистой установки](docs/marketplace.md#переход-с-исходного-репозитория).
 
 ### Через UI (рекомендуется)
 1. Settings → Devices & Services
 2. Найдите "Evolute"
 3. Нажмите три точки (⋮) → "Delete"
 
-### Вручную
-```bash
-rm -rf /path/to/homeassistant/custom_components/evolute
-sudo systemctl restart home-assistant@homeassistant
-```
+Если пакет установлен через Marketplace, удалите его там после удаления конфигурационной записи. При ручной установке удалите каталог `custom_components/evolute` и перезапустите Home Assistant.
 
 ## Устранение проблем
 
 ### Интеграция не появляется в списке
 1. Проверьте, что папка `custom_components/evolute` существует
-2. Проверьте права доступа: `chmod -R 755 custom_components/evolute`
+2. Проверьте, что Home Assistant может читать файлы интеграции.
 3. Перезапустите Home Assistant
 4. Очистите кеш браузера (Ctrl+Shift+R)
 

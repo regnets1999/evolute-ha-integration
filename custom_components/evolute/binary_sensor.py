@@ -60,10 +60,13 @@ class EvoluteBinarySensor(CoordinatorEntity, BinarySensorEntity):
         self._attr_device_info = build_device_info(car)
 
     @property
-    def is_on(self) -> bool:
-        """Return true if the binary sensor is on."""
+    def is_on(self) -> bool | None:
+        """Return the current binary sensor state."""
         car_data = self.coordinator.data.get(self._car_id, {})
-        return bool(car_data.get(self._state_key))
+        value = car_data.get(self._state_key)
+        if self._state_key == "prep_running" and value is None:
+            return None
+        return bool(value)
 
     @property
     def available(self) -> bool:

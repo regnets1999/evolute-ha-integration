@@ -154,6 +154,11 @@ def _parse_epoch_ms(raw: Any) -> Any:
         return None
 
 
+def _empty_string_to_none(value: Any) -> Any:
+    """Treat blank numeric telemetry as missing."""
+    return None if isinstance(value, str) and not value.strip() else value
+
+
 def _parse_car_info(raw: dict[str, Any]) -> dict[str, Any]:
     """Flatten the /car-service/tbox/{car_id}/info response for entity consumption."""
     sensors = raw.get("sensors") or {}
@@ -223,8 +228,8 @@ def _parse_car_info(raw: dict[str, Any]) -> dict[str, Any]:
         "battery_percentage": sensors_data.get("batteryPercentage"),
         "remains_mileage": sensors_data.get("remainsMileage"),
         "ignition": sensors_data.get("ignitionStatus"),
-        "fuel_percentage": sensors_data.get("fuelPercentage"),
-        "remains_mileage_fuel": sensors_data.get("remainsMileageFuel"),
+        "fuel_percentage": _empty_string_to_none(sensors_data.get("fuelPercentage")),
+        "remains_mileage_fuel": _empty_string_to_none(sensors_data.get("remainsMileageFuel")),
         "central_lock": central_lock_open,
         "door_fl": sensors_data.get("doorFLStatus"),
         "door_fr": sensors_data.get("doorFRStatus"),
@@ -294,6 +299,14 @@ def _status_chip(sensors: dict[str, Any], is_online: Any) -> str:
     return "Доступен"
 
 
+def _is_v2_lock_button(button: dict[str, Any]) -> bool:
+    """Identify the supported lock command pair in carV2 telemetry."""
+    return (
+        button.get("activateCommand") == V2_COMMAND_BUTTONS["centralLockingToggle"]
+        and button.get("deactivateCommand") == "centralLockingOn"
+    )
+
+
 def _parse_car_info_v2(
     raw: dict[str, Any], tagged_buttons_visible: bool = True
 ) -> dict[str, Any]:
@@ -337,13 +350,22 @@ def _parse_car_info_v2(
     parsed["firmware_expected"] = firmware.get("expected")
     parsed["firmware_mismatch"] = bool(firmware.get("mismatch"))
     parsed["settings_mismatch"] = bool(settings.get("mismatch"))
-    commands = {"heatingOn": "heating", "coolingOn": "cooling",
-                "centralLockingOff": "centralLockingToggle", "search": "blink",
-                "trunkOpen": "trunkToggle", "tripPreparationOn": COMMAND_PREPARE}
+    commands = {
+        "heatingOn": "heating",
+        "coolingOn": "cooling",
+        V2_COMMAND_BUTTONS["centralLockingToggle"]: "centralLockingToggle",
+        "search": "blink",
+        "trunkOpen": "trunkToggle",
+        "tripPreparationOn": COMMAND_PREPARE,
+    }
     disabled = set()
     tags: dict[str, str | None] = {}
+    parsed["prep_running"] = None
+    prep_running_for_controls = False
     for button in raw.get("buttons") or []:
         command = commands.get(button.get("activateCommand"))
+        if command == "centralLockingToggle" and not _is_v2_lock_button(button):
+            continue
         if command in ("heating", "cooling"):
             parsed[command] = button.get("status")
         if command:
@@ -351,12 +373,20 @@ def _parse_car_info_v2(
         if command and not button.get("enabled", False):
             disabled.add(command)
         if button.get("activateCommand") == "tripPreparationOn":
-            parsed["prep_running"] = bool(button.get("status"))
+            last_run = button.get("lastRun")
+            active = last_run.get("isActive") if isinstance(last_run, dict) else None
+            if type(active) is bool:
+                parsed["prep_running"] = active
+                prep_running_for_controls = active
+            else:
+                prep_running_for_controls = bool(button.get("status"))
             parsed["prep_available"] = bool(button.get("enabled"))
             parsed["prep_disabled"] = not bool(button.get("enabled"))
-    if parsed["prep_running"] or not parsed["prep_available"]:
+    if "centralLockingToggle" not in tags:
+        disabled.add("centralLockingToggle")
+    if prep_running_for_controls or not parsed["prep_available"]:
         disabled.add(COMMAND_PREPARE)
-    if not parsed["prep_running"]:
+    if not prep_running_for_controls:
         disabled.add(COMMAND_CANCEL)
 
     # buttons[].enabled is only one of the reasons a control is refused. The app
@@ -416,6 +446,7 @@ def _parse_car_details(row: dict[str, Any]) -> dict[str, Any]:
         "update_available": bool(row.get("updateAvailable")),
         "location_enabled": bool(row.get("locationStatus")),
         "prep_script_time": row.get("currentScriptTime"),
+        "prep_script_time_options": row.get("availableScriptTime"),
         "last_sensor_request": _parse_iso_timestamp(row.get("lastSensorRequest")),
         "last_command_trigger": _parse_iso_timestamp(row.get("lastCommandTrigger")),
     }
@@ -737,6 +768,8 @@ class EvoluteClient:
         for button in self._buttons.get(car_id) or []:
             if button.get("activateCommand") != target:
                 continue
+            if command == "centralLockingToggle" and not _is_v2_lock_button(button):
+                continue
             if command == COMMAND_PREPARE:
                 return button.get("activateCommand")
             if command == COMMAND_CANCEL:
@@ -749,7 +782,7 @@ class EvoluteClient:
         return None
 
     async def async_send_command(
-        self, car_id: str, command: str
+        self, car_id: str, command: str, *, duration_minutes: int | None = None
     ) -> tuple[bool, str | None]:
         """Send a remote command. Returns (accepted, command_id).
 
@@ -770,10 +803,13 @@ class EvoluteClient:
             )
             return False, None
 
+        body: dict[str, Any] = {"commandName": fn_name, "imei": imei}
+        if command == COMMAND_PREPARE and duration_minutes is not None:
+            body["durationMinutes"] = duration_minutes
         result = await self._request(
             "POST",
             TELEMETRY_COMMANDS_URL,
-            json_body={"commandName": fn_name, "imei": imei},
+            json_body=body,
             allow_empty=True,
         )
         command_id = result.get("commandId")

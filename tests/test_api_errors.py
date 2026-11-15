@@ -252,3 +252,25 @@ class ApiErrorTests(IsolatedAsyncioTestCase):
         self.assertEqual(await self.client.async_send_command("test-car", "blink"), (True, None))
         with self.assertRaises(self.api.EvoluteProtocolError):
             await self.client.async_send_command("test-car", "blink")
+
+    async def test_fuel_telemetry_preserves_numeric_values_for_both_api_modes(self):
+        cases = (
+            ("", " \t\n", None, None),
+            (" \t\n", "", None, None),
+            (None, None, None, None),
+            (0, 0, 0, 0),
+            (62.5, 438, 62.5, 438),
+        )
+        for car_v2 in (False, True):
+            if car_v2:
+                self.client._imeis["test-car"] = "test-imei"
+            for level, remaining, expected_level, expected_remaining in cases:
+                with self.subTest(car_v2=car_v2, level=level, remaining=remaining):
+                    range_key = "remainsFuelMileage" if car_v2 else "remainsMileageFuel"
+                    fuel = {"fuelPercentage": level, range_key: remaining}
+                    sensors = fuel if car_v2 else {"sensorsData": fuel}
+                    self.session.get.return_value = response(200, {"sensors": sensors})
+                    data = await self.client.async_get_car_info("test-car")
+
+                    self.assertEqual(data["fuel_percentage"], expected_level)
+                    self.assertEqual(data["remains_mileage_fuel"], expected_remaining)
