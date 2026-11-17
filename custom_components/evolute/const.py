@@ -13,7 +13,7 @@ CARD_URL = f"/local/evolute/{CARD_FILENAME}"
 CONF_ACCESS_TOKEN = "access_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 
-PLATFORMS = ["sensor", "binary_sensor", "button", "device_tracker"]
+PLATFORMS = ["sensor", "binary_sensor", "button", "device_tracker", "select"]
 
 BASE_URL = "https://app.evassist.ru"
 REFRESH_URL = f"{BASE_URL}/id-service/auth/refresh-token"
@@ -123,7 +123,7 @@ SENSOR_TYPES = {
     "firmware_version": ("Firmware Version", None, None, "mdi:chip", "firmware_version", None),
     "firmware_expected": ("Firmware Version (Expected)", None, None, "mdi:chip", "firmware_expected", None),
     "warnings_count": ("Warning Count", None, None, "mdi:alert-circle-outline", "warnings_count", SensorStateClass.MEASUREMENT),
-    "prep_end_time": ("Trip Preparation Remaining", None, None, "mdi:timer-outline", "prep_end_time", None),
+    "prep_end_time": ("Trip Preparation End Time", None, None, "mdi:timer-outline", "prep_end_time", None),
     "prep_start_time": ("Trip Preparation Started", None, SensorDeviceClass.TIMESTAMP, "mdi:clock-start", "prep_start_time", None),
     # Sourced from the slow /car/v2/search poll rather than tbox telemetry.
     "prep_script_time": ("Trip Preparation Duration", "min", SensorDeviceClass.DURATION, "mdi:timer-cog-outline", "prep_script_time", None),

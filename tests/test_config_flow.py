@@ -37,6 +37,17 @@ class DataUpdateCoordinatorStub:
 
     def __init__(self, hass, *_args, **_kwargs):
         self.hass = hass
+        self.data = None
+        self.last_update_success = True
+        self._listeners = []
+
+    def async_add_listener(self, listener):
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
+
+    def async_update_listeners(self):
+        for listener in tuple(self._listeners):
+            listener()
 
 
 class CoordinatorEntityStub:
@@ -79,7 +90,7 @@ def load_evolute_module(name):
         "homeassistant.const": SimpleNamespace(
             Platform=SimpleNamespace(
                 SENSOR="sensor", BINARY_SENSOR="binary_sensor",
-                BUTTON="button", DEVICE_TRACKER="device_tracker",
+                BUTTON="button", DEVICE_TRACKER="device_tracker", SELECT="select",
             )
         ),
         "homeassistant.core": SimpleNamespace(HomeAssistant=object, callback=lambda func: func),
@@ -105,6 +116,7 @@ def load_evolute_module(name):
             BinarySensorDeviceClass=Mock(), BinarySensorEntity=object,
         ),
         "homeassistant.components.button": SimpleNamespace(ButtonEntity=object),
+        "homeassistant.components.select": SimpleNamespace(SelectEntity=object),
         "homeassistant.components.device_tracker": SimpleNamespace(
             SourceType=SimpleNamespace(GPS="gps"), TrackerEntity=object,
         ),

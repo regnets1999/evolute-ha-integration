@@ -2,17 +2,19 @@
 from __future__ import annotations
 
 import logging
+from asyncio import Lock
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import EvoluteAuthError, EvoluteClient, EvoluteError
+from .client import EvoluteAuthError, EvoluteClient, EvoluteError, TripPreparationRun
 from .const import (
     COMMAND_CANCEL,
     COMMAND_PENDING_TIMEOUT_SECONDS,
@@ -30,6 +32,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def trip_preparation_options(value: Any) -> list[int]:
+    """Return unique positive integer options in server order."""
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        minutes for minutes in value if type(minutes) is int and minutes > 0
+    ))
+
+
 @dataclass
 class PendingCommand:
     """A command that was accepted by the API but not yet visible in telemetry."""
@@ -40,6 +51,29 @@ class PendingCommand:
     # Set on the carV2 path, where the backend tracks the command itself and
     # reports whether the car accepted or rejected it.
     command_id: str | None = None
+
+
+@dataclass
+class PreparationTiming:
+    """The last observed run and its fixed estimate, including terminal runs."""
+
+    started_at: datetime
+    ends_at: datetime | None = None
+    confirmed: bool = False
+    closed: bool = False
+
+
+def _preparation_end(
+    started_at: datetime, duration_ms: float | None, minutes: Any,
+) -> datetime | None:
+    configured_ms = minutes * 60_000 if type(minutes) is int and minutes > 0 else None
+    for milliseconds in (configured_ms, duration_ms):
+        if milliseconds is not None:
+            try:
+                return started_at + timedelta(milliseconds=milliseconds)
+            except OverflowError:
+                continue
+    return None
 
 
 class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
@@ -59,6 +93,9 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         self.cars = cars
         self._details: dict[str, dict[str, Any]] = {}
         self._details_next_fetch = 0.0
+        self._details_lock = Lock()
+        self._preparation_locks: defaultdict[str, Lock] = defaultdict(Lock)
+        self._preparation_timing: dict[str, PreparationTiming] = {}
         self._pending: dict[str, dict[str, PendingCommand]] = {}
         self._burst_cancels: list[Any] = []
 
@@ -67,52 +104,166 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         try:
             return await self._async_poll()
         except EvoluteAuthError as err:
+            for car_id in self._preparation_timing:
+                self._invalidate_preparation_times(car_id)
             raise ConfigEntryAuthFailed(str(err)) from err
 
     async def _async_poll(self) -> dict[str, dict[str, Any]]:
         await self._async_update_details()
 
-        data: dict[str, dict[str, Any]] = {}
+        telemetry: dict[str, dict[str, Any]] = {}
         last_error: EvoluteError | None = None
 
         for car in self.cars:
             car_id = car["car_id"]
             try:
-                info = await self.client.async_get_car_info(car_id)
+                telemetry[car_id] = await self.client.async_get_car_info(car_id)
             except EvoluteAuthError:
                 raise
             except EvoluteError as err:
+                self._invalidate_preparation_times(car_id)
                 last_error = err
                 _LOGGER.debug("Could not update an Evolute vehicle: %s", err)
                 continue
-            # Keep fresh telemetry ahead of cached service data.
-            data[car_id] = {**self._details.get(car_id, {}), **info}
 
-        if not data and last_error is not None:
+        if not telemetry and last_error is not None:
             raise UpdateFailed(str(last_error)) from last_error
 
         await self._async_resolve_command_ids()
+        # Use the latest service data even if a write completed during this poll.
+        data = {
+            car_id: {**self._details.get(car_id, {}), **info}
+            for car_id, info in telemetry.items()
+        }
+        now = datetime.now(UTC)
+        for car_id, info in data.items():
+            if "prep_run" in info:
+                self._update_preparation_times(car_id, info, now)
         self._resolve_pending(data)
         return data
 
+    def _invalidate_preparation_times(self, car_id: str) -> None:
+        """Clear previously published times when telemetry can no longer confirm them."""
+        timing = self._preparation_timing.get(car_id)
+        if timing is None:
+            return
+        timing.confirmed = False
+        current = (self.data or {}).get(car_id, {})
+        if "prep_run" in current and (
+            current.get("prep_start_time") is not None or current.get("prep_end_time") is not None
+        ):
+            self.data = {
+                **self.data,
+                car_id: {**current, "prep_start_time": None, "prep_end_time": None},
+            }
+            self.async_update_listeners()
+
+    def _update_preparation_times(
+        self, car_id: str, info: dict[str, Any], now: datetime,
+    ) -> None:
+        run: TripPreparationRun | None = info["prep_run"]
+        timing = self._preparation_timing.get(car_id)
+        info["prep_start_time"] = info["prep_end_time"] = None
+        if timing is not None and timing.ends_at is not None and timing.ends_at <= now:
+            timing.closed = True
+
+        if not info.get("prep_run_cached"):
+            if timing is not None:
+                timing.confirmed = False
+            started_at = run.started_at if run is not None else None
+            if started_at is not None:
+                if started_at > now or (timing is not None and started_at < timing.started_at):
+                    return
+                if timing is None or started_at > timing.started_at:
+                    timing = self._preparation_timing[car_id] = PreparationTiming(started_at)
+            if timing is None or run is None:
+                return
+            if run.is_active is False or run.finished_at is not None:
+                timing.closed = True
+            elif run.is_active is True and started_at is not None and not timing.closed:
+                timing.confirmed = True
+                if timing.ends_at is None:
+                    timing.ends_at = _preparation_end(
+                        started_at, run.duration_ms, info.get("prep_script_time")
+                    )
+
+        if timing is None or timing.closed or not timing.confirmed:
+            return
+        if timing.ends_at is not None and timing.ends_at <= now:
+            timing.closed = True
+            return
+        info["prep_start_time"] = timing.started_at
+        if timing.ends_at is not None:
+            info["prep_end_time"] = timing.ends_at.isoformat()
+
     async def _async_update_details(self) -> None:
         """Refresh the slow-moving /car/v2/search fields when they are due."""
-        now = monotonic()
-        if now < self._details_next_fetch:
+        if monotonic() < self._details_next_fetch:
             return
+        async with self._details_lock:
+            now = monotonic()
+            if now < self._details_next_fetch:
+                return
 
-        try:
-            details = await self.client.async_get_car_details()
-        except EvoluteAuthError:
-            raise
-        except EvoluteError as err:
-            _LOGGER.debug("Could not update Evolute service data: %s", err)
-            # Back off briefly rather than retrying on every 30s telemetry poll.
-            self._details_next_fetch = now + DETAILS_RETRY_INTERVAL_SECONDS
-            return
+            try:
+                details = await self.client.async_get_car_details()
+            except EvoluteAuthError:
+                raise
+            except EvoluteError as err:
+                _LOGGER.debug("Could not update Evolute service data: %s", err)
+                # Back off briefly rather than retrying on every 30s telemetry poll.
+                self._details_next_fetch = now + DETAILS_RETRY_INTERVAL_SECONDS
+                return
 
-        self._details = details
-        self._details_next_fetch = now + DETAILS_UPDATE_INTERVAL_SECONDS
+            self._details = details
+            self._details_next_fetch = now + DETAILS_UPDATE_INTERVAL_SECONDS
+
+    def can_set_trip_preparation_duration(self, car_id: str) -> bool:
+        """Return whether the current telemetry and details allow a write."""
+        car = (self.data or {}).get(car_id, {})
+        return (
+            self.last_update_success
+            and car.get("prep_duration_supported") is True
+            and car.get("prep_running") is not True
+            and bool(self.trip_preparation_duration_options(car_id))
+        )
+
+    def trip_preparation_duration_options(self, car_id: str) -> list[int]:
+        """Return the latest server options, including a poll awaiting publication."""
+        return trip_preparation_options(
+            self._details.get(car_id, {}).get("prep_script_time_options")
+        )
+
+    async def async_set_trip_preparation_duration(self, car_id: str, minutes: int) -> None:
+        """Write the setting, publish it, then reconcile it with the server."""
+        async with self._preparation_locks[car_id], self._details_lock:
+            if not self.can_set_trip_preparation_duration(car_id):
+                raise HomeAssistantError("Evolute trip preparation duration cannot be changed now")
+            options = self.trip_preparation_duration_options(car_id)
+            if type(minutes) is not int or minutes not in options:
+                raise HomeAssistantError(
+                    "Evolute trip preparation duration is outside the available options"
+                )
+
+            try:
+                await self.client.async_set_trip_preparation_duration(car_id, minutes)
+            except EvoluteError as err:
+                raise HomeAssistantError(str(err)) from err
+            self._publish_trip_preparation_settings(car_id, {"prep_script_time": minutes})
+
+            try:
+                confirmed = await self.client.async_get_trip_preparation_duration(car_id)
+            except EvoluteError as err:
+                _LOGGER.debug("Could not verify the saved Evolute trip preparation duration: %s", err)
+                return
+            self._publish_trip_preparation_settings(car_id, confirmed)
+
+    @callback
+    def _publish_trip_preparation_settings(self, car_id: str, settings: dict[str, Any]) -> None:
+        self._details.setdefault(car_id, {}).update(settings)
+        if self.data and car_id in self.data:
+            self.data = {**self.data, car_id: {**self.data[car_id], **settings}}
+            self.async_update_listeners()
 
     # --- command dispatch -------------------------------------------------
 
@@ -120,6 +271,20 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
         self, car_id: str, command: str, confirm_key: str | None
     ) -> bool:
         """Send a command and track it until the car confirms it in telemetry."""
+        if command == COMMAND_PREPARE:
+            async with self._preparation_locks[car_id]:
+                if not self.last_update_success or not (self.data or {}).get(car_id):
+                    raise HomeAssistantError("Evolute vehicle state is unavailable.")
+                if self.is_command_blocked(car_id, command):
+                    raise HomeAssistantError(
+                        f"Evolute command '{command}' is currently blocked by the vehicle."
+                    )
+                return await self._async_send_command(car_id, command, confirm_key)
+        return await self._async_send_command(car_id, command, confirm_key)
+
+    async def _async_send_command(
+        self, car_id: str, command: str, confirm_key: str | None
+    ) -> bool:
         current = (self.data or {}).get(car_id, {})
         baseline = current.get(confirm_key) if confirm_key else None
 
@@ -129,9 +294,7 @@ class EvoluteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any
                 options = current.get("prep_script_time_options")
                 if (
                     type(duration) is not int or duration <= 0
-                    or (isinstance(options, list) and not any(
-                        type(option) is int and option == duration for option in options
-                    ))
+                    or (isinstance(options, list) and duration not in trip_preparation_options(options))
                 ):
                     duration = None
                 accepted, command_id = await self.client.async_send_command(

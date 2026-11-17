@@ -1,4 +1,4 @@
-"""Offline vehicle identity regressions through Evolute and its four platforms."""
+"""Offline vehicle identity regressions through Evolute and its existing platforms."""
 
 import asyncio
 import json
@@ -52,7 +52,7 @@ class IdentifierCompatibilityTests(IsolatedAsyncioTestCase):
         cls.identity = load_evolute_module("vehicle_identity")
         cls.config_flow = load_evolute_module("config_flow")
         cls.platforms = {
-            domain: load_evolute_module(domain) for domain in BASELINE_KEYS
+            domain: load_evolute_module(domain) for domain in (*BASELINE_KEYS, "select")
         }
 
     def setUp(self):
@@ -62,6 +62,7 @@ class IdentifierCompatibilityTests(IsolatedAsyncioTestCase):
         self.store_path = self.storage_dir / self.identity.STORAGE_KEY
         self.entry = SimpleNamespace(
             entry_id=ENTRY_ID, unique_id=LEGACY_UNIQUE_ID,
+            async_on_unload=Mock(),
             data={
                 "access_token": fake_access_jwt({"_id": ACCOUNT_ID, "iat": 1}),
                 "refresh_token": "test-refresh",

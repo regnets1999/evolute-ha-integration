@@ -5,10 +5,11 @@ import asyncio
 import base64
 import json
 import logging
+import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Callable, Optional
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import aiohttp
 
@@ -66,6 +67,36 @@ class EvoluteRequestError(EvoluteError):
 @dataclass
 class _RefreshAttempt:
     failure: tuple[type[EvoluteError], str] | None = None
+
+
+@dataclass(frozen=True)
+class TripPreparationRun:
+    """Validated timing data for the carV2 preparation button."""
+
+    is_active: bool | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: float | None
+
+
+def _positive_number(value: Any) -> float | None:
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _preparation_timestamp(value: Any) -> datetime | None:
+    milliseconds = _positive_number(value)
+    if milliseconds is None:
+        return None
+    try:
+        return datetime.fromtimestamp(milliseconds / 1000, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _raise_for_status(status: int, operation: str) -> None:
@@ -265,6 +296,7 @@ def _parse_car_info(raw: dict[str, Any]) -> dict[str, Any]:
         "has_warnings": bool(warnings),
         "prep_running": prep_running,
         "prep_available": bool(prep.get("available")),
+        "prep_duration_supported": prep.get("available") is True,
         "prep_disabled": bool(prep.get("disabled")),
         "prep_error": bool(prep.get("errorStatus")),
         "prep_end_time": prep.get("endTime"),
@@ -361,6 +393,7 @@ def _parse_car_info_v2(
     disabled = set()
     tags: dict[str, str | None] = {}
     parsed["prep_running"] = None
+    parsed["prep_run"] = None
     prep_running_for_controls = False
     for button in raw.get("buttons") or []:
         command = commands.get(button.get("activateCommand"))
@@ -374,13 +407,21 @@ def _parse_car_info_v2(
             disabled.add(command)
         if button.get("activateCommand") == "tripPreparationOn":
             last_run = button.get("lastRun")
-            active = last_run.get("isActive") if isinstance(last_run, dict) else None
+            last_run = last_run if isinstance(last_run, dict) else {}
+            active = last_run.get("isActive")
+            parsed["prep_run"] = TripPreparationRun(
+                active if type(active) is bool else None,
+                _preparation_timestamp(last_run.get("startedAt")),
+                _preparation_timestamp(last_run.get("finishedAt")),
+                _positive_number(last_run.get("durationMs")),
+            )
             if type(active) is bool:
                 parsed["prep_running"] = active
                 prep_running_for_controls = active
             else:
                 prep_running_for_controls = bool(button.get("status"))
             parsed["prep_available"] = bool(button.get("enabled"))
+            parsed["prep_duration_supported"] = button.get("enabled") is True
             parsed["prep_disabled"] = not bool(button.get("enabled"))
     if "centralLockingToggle" not in tags:
         disabled.add("centralLockingToggle")
@@ -423,7 +464,10 @@ def _parse_car_info_v2(
     }
     if hidden and not tagged_buttons_visible:
         disabled.update(hidden)
-        for key in ("prep_running", "prep_available", "prep_disabled", "prep_error"):
+        for key in (
+            "prep_running", "prep_available", "prep_disabled", "prep_error",
+            "prep_duration_supported", "prep_run",
+        ):
             parsed[key] = None
     if "isParkedOn" not in sensors:
         parsed["is_parked"] = parsed["is_moving"] = None
@@ -657,6 +701,28 @@ class EvoluteClient:
         except (AttributeError, TypeError, ValueError):
             raise EvoluteProtocolError("Evolute returned invalid service data") from None
 
+    async def async_set_trip_preparation_duration(self, car_id: str, minutes: int) -> None:
+        """Save the vehicle's preparation setting without launching preparation."""
+        await self._request(
+            "PUT",
+            f"{BASE_URL}/car-service/car/v2/{quote(car_id, safe='')}",
+            json_body={"currentScriptTime": minutes},
+            allow_empty=True,
+        )
+
+    async def async_get_trip_preparation_duration(self, car_id: str) -> dict[str, Any]:
+        """Read back the preparation settings of one vehicle."""
+        row = await self._request("GET", f"{BASE_URL}/car-service/car/v2/{quote(car_id, safe='')}")
+        if "currentScriptTime" not in row:
+            raise EvoluteProtocolError("Evolute returned no trip preparation duration")
+        minutes = row["currentScriptTime"]
+        if minutes is not None and type(minutes) is not int:
+            raise EvoluteProtocolError("Evolute returned an invalid trip preparation duration")
+        settings: dict[str, Any] = {"prep_script_time": minutes}
+        if "availableScriptTime" in row:
+            settings["prep_script_time_options"] = row["availableScriptTime"]
+        return settings
+
     async def _async_update_user_flags(self) -> None:
         """Check account flags and keep tagged controls visible."""
         await self._request("GET", USER_FLAGS_URL)
@@ -699,7 +765,10 @@ class EvoluteClient:
                     if resp.status == 304:
                         if car_id not in self._last_info:
                             raise EvoluteProtocolError("Evolute returned 304 without cached telemetry")
-                        return self._last_info[car_id]
+                        cached = self._last_info[car_id]
+                        if "prep_run" in cached:
+                            return {**cached, "prep_run_cached": True}
+                        return cached
 
                     if resp.status == 401 and not refreshed:
                         refreshed = True
